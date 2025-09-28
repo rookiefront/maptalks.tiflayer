@@ -25,15 +25,14 @@ function getActor() {
     return tifActor;
 }
 
-
-function workerCreateImage(width, height, datas, ignoreBlackColor, readEnd) {
+function workerCreateImage({ width, height, datas, ignoreBlackColor, url }, readEnd) {
     if (!Browser.decodeImageInWorker) {
         const image = createImage(width, height, datas, ignoreBlackColor);
-        readEnd(image)
+        readEnd(image);
     } else {
         const actor = getActor();
-        const arrayBuffer = this.geoTifInfo.data.buffer;
-        actor.send({ width, height, type: 'createimage', url: this.geoTifInfo.url, buffer: arrayBuffer, ignoreBlackColor: this.options.ignoreBlackColor },
+        const arrayBuffer = datas.buffer;
+        actor.send({ width, height, type: 'createimage', url: url, buffer: arrayBuffer, ignoreBlackColor: ignoreBlackColor },
             [arrayBuffer], (err, message) => {
                 if (err) {
                     console.error(err);
@@ -43,7 +42,6 @@ function workerCreateImage(width, height, datas, ignoreBlackColor, readEnd) {
             });
     }
 }
-
 
 function getTileImage(options) {
     if (!tempCanvas) {
@@ -81,12 +79,12 @@ async function getTileImageByRemoteTif(options, geoTifInfo) {
     const { bounds, quality } = options;
     const [px, py, w, h] = bounds;
     const params = {
-        window: [px, py, px+w, py+h],
+        window: [px, py, px + w, py + h],
         width: geoTifInfo.tileSize,
         height: geoTifInfo.tileSize,
-        pool,
-    }
-    console.log(params)
+        pool
+    };
+    console.log(params);
     const raster = await options.tifImage.readRasters(params);
 
     const data = options.renderTifToData(raster);
@@ -100,9 +98,6 @@ async function getTileImageByRemoteTif(options, geoTifInfo) {
         return tempCanvas.transferToImageBitmap();
     }
 }
-
-
-
 
 const forEachCoordinatesOfExtent = (extent, transform, out) => {
     let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
@@ -139,9 +134,9 @@ const options = {
 };
 
 export class TifLayer extends TileLayer {
-    signal = new AbortController()
     constructor(id, options) {
         super(id, options);
+        this.signal = new AbortController();
         this._pendingTiles = [];
         this.on('renderercreate', this._renderCreate);
 
@@ -150,7 +145,7 @@ export class TifLayer extends TileLayer {
             console.error('渲染方法必填');
         }
         this.geoTifInfo = {
-            loaded: false,
+            loaded: false
         };
         this._initTif();
     }
@@ -260,7 +255,7 @@ export class TifLayer extends TileLayer {
             const dataUrl = getTileImage({
                 bounds: tileBounds,
                 image: this.geoTifInfo.canvas,
-                quality: this.options.quality,
+                quality: this.options.quality
             });
             loadTile(dataUrl);
         // }else {
@@ -359,31 +354,43 @@ export class TifLayer extends TileLayer {
             height
         }).then(raster => {
             const datas = this.renderTifToData(raster);
-             workerCreateImage(width, height, datas, this.options.ignoreBlackColor, (cImage) => {
+             workerCreateImage({
+                 width,
+                 height,
+                 datas,
+                 ignoreBlackColor: this.options.ignoreBlackColor
+             }, (cImage) => {
                  readEnd(cImage);
              });
         });
         // 渲染完成，清除缓存，进行移动加载大图
         this.once('renderend', () => {
             // 直接调用 clear 即可
-            this.geoTifInfo.loadedPreview = true
+            this.geoTifInfo.loadedPreview = true;
             this.geoTifInfo.imageTif.readRasters({
                 pool,
                 width,
                 height,
-                signal: this.signal?.signal
+                signal: this.signal.signal
             }).then((raster) => {
                 const datas = this.renderTifToData(raster);
-                workerCreateImage(width, height, datas, this.options.ignoreBlackColor, (cImage) => {
-                    geoTifInfo.canvas = cImage;
-                    const renderer = this.getRenderer()
-                    if (renderer && renderer.tileInfoCache){
+                workerCreateImage({
+                    width,
+                    height,
+                    datas,
+                    ignoreBlackColor: this.options.ignoreBlackColor,
+                    url: this.geoTifInfo.url
+                }, (cImage) => {
+                    readEnd(cImage);
+                    const renderer = this.getRenderer();
+                    if (renderer && renderer.tileInfoCache) {
                         renderer.tileInfoCache.reset();
+                        renderer.draw();
                     }
                 });
-            })
+            });
 
-        })
+        });
     }
 
     getImageBounds(x, y, z, bounds) {
@@ -413,10 +420,9 @@ export class TifLayer extends TileLayer {
         return tileExtent;
     }
 
-
     setTifUrl(url) {
-        this.signal?.abort?.()
-        this.signal = new AbortController()
+        this.signal.abort();
+        this.signal = new AbortController();
         this.options.tifUrl = url;
         this.geoTifInfo = {};
         this._pendingTiles = [];
@@ -425,9 +431,10 @@ export class TifLayer extends TileLayer {
         this.getRenderer().setToRedraw();
         return this;
     }
-    remove(){
+
+    remove() {
         super.remove();
-        this.signal?.abort?.()
+        this.signal.abort();
     }
 }
 

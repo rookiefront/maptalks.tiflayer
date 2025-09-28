@@ -43,7 +43,7 @@
         // tifUrl: './test4.tif',
         debug: true,
         datadebug: true,
-        // renderer: 'canvas',
+        renderer: 'canvas',
         renderTifToData(raster) {
             return renderTifToDatas(raster);
         }
@@ -57,6 +57,7 @@
     const tileActor = maptalks.getTileActor();
     const maskId = '青浦区';
     layer.setTifUrl('http://studygis.com:801/geojson/tif/Z_NAFP_C_BABJ_20250925130814_P_CLDAS_RT_CHN_0P05_HOR-WIN-2025092513.tif');
+    layer.setTifUrl('http://studygis.com:801/geojson/tif/1.tif');
 
 
 </script>
