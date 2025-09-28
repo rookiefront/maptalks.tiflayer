@@ -1,8 +1,8 @@
 import { TileLayer, Extent, Browser, registerWorkerAdapter, worker, Util } from 'maptalks';
-import { Pool, fromUrl } from 'geotiff';
+import { fromArrayBuffer, Pool } from 'geotiff';
 import SphericalMercator from '@mapbox/sphericalmercator';
 import WORKERCODE from './src/worker/worker.bundle.js';
-import { bboxCross, createCanvas, createImage, getBlankImage } from './src/util.js';
+import { bboxCross, createCanvas, createImage, getBlankImage, mergeArrayBuffer } from './src/util.js';
 
 const merc = new SphericalMercator({
     size: 256,
@@ -10,7 +10,7 @@ const merc = new SphericalMercator({
 });
 const pool = new Pool();
 const TEMPBBOX1 = [1, 1, 1, 1], TEMPBBOX2 = [1, 1, 1, 1];
-const DEFAULT_TILE_SIZE = 512;
+const DEFAULT_TILE_SIZE = 256;
 const workerKey = '_tifprocess_';
 let tifActor;
 let tempCanvas;
@@ -30,16 +30,9 @@ function getTileImage(options) {
         tempCanvas = createCanvas(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE);
     }
     const ctx = tempCanvas.getContext('2d');
-    const {
-        width,
-        height
-    } = tempCanvas;
+    const { width, height } = tempCanvas;
     ctx.clearRect(0, 0, width, height);
-    const {
-        bounds,
-        image,
-        quality
-    } = options;
+    const { bounds, image, quality } = options;
     const [px, py, w, h] = bounds;
     ctx.drawImage(image, px, py, w, h, 0, 0, width, height);
     if (!Browser.decodeImageInWorker) {
@@ -50,38 +43,6 @@ function getTileImage(options) {
         return imageBitMap;
     }
 }
-
-async function getTileImageByRemoteTif(options, geoTifInfo) {
-    if (!tempCanvas) {
-        tempCanvas = createCanvas(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE);
-    }
-    const ctx = tempCanvas.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    const { bounds, quality } = options;
-    const [px, py, w, h] = bounds;
-    const raster = await options.tifImage.readRasters({
-        window: [px, py, px+w, py+h],
-        width: geoTifInfo.tileSize,
-        height: geoTifInfo.tileSize,
-        pool,
-    });
-
-    const data = options.renderTifToData(raster);
-
-    // const imageData = new ImageData(new Uint8ClampedArray(data), geoTifInfo.tileSize, geoTifInfo.tileSize);
-    // ctx.putImageData(imageData, 0, 0);
-    //
-    // if (!Browser.decodeImageInWorker) {
-    //     return tempCanvas.toDataURL('image/png', quality || 0.6);
-    // } else {
-    //     return tempCanvas.transferToImageBitmap();
-    // }
-}
-
-
-
-
 const forEachCoordinatesOfExtent = (extent, transform, out) => {
     let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
     const coordinates = extent.toArray();
@@ -112,8 +73,7 @@ const options = {
     urlTemplate: './hello?x={x}&y={y}&z={z}',
     datadebug: false,
     quality: 0.6,
-    ignoreBlackColor: false,
-    tileSize: DEFAULT_TILE_SIZE
+    ignoreBlackColor: false
 };
 
 export class TifLayer extends TileLayer {
@@ -121,13 +81,8 @@ export class TifLayer extends TileLayer {
         super(id, options);
         this._pendingTiles = [];
         this.on('renderercreate', this._renderCreate);
-
-        this.renderTifToData = options.renderTifToData;
-        if (!this.renderTifToData) {
-            console.error('渲染方法必填');
-        }
         this.geoTifInfo = {
-            loaded: false,
+            loaded: false
         };
         this._initTif();
     }
@@ -156,35 +111,23 @@ export class TifLayer extends TileLayer {
         e.renderer.loadTileImage = (img, url, tile) => {
             if (!this.geoTifInfo.loaded) {
                 this._pendingTiles.push({
-                    img,
-                    url,
-                    tile
+                    img, url, tile
                 });
                 return this;
             }
             setTimeout(() => {
-                this._getTifTile({
-                    url,
-                    img,
-                    tile
-                });
+                this._getTifTile({ url, img, tile });
             }, 1);
 
         };
     }
 
     _getTifTile(tileData) {
-        const {
-            url,
-            img,
-            tile
-        } = tileData;
+        const { url, img, tile } = tileData;
         const searchParams = new URL(Util.getAbsoluteURL(url)).searchParams;
-
         function getParams(key) {
             return parseInt(searchParams.get(key));
         }
-
         const layer = this;
         const loadTile = (dataUrl) => {
             const reslove = (imageData) => {
@@ -233,25 +176,12 @@ export class TifLayer extends TileLayer {
             return null;
         }
         const tileBounds = this.getImageBounds(x, y, z, bounds);
-        if (!this.geoTifInfo.loadedPreview){
-            const dataUrl = getTileImage({
-                bounds: tileBounds,
-                image: this.geoTifInfo.canvas,
-                quality: this.options.quality,
-            });
-            loadTile(dataUrl);
-        }else {
-            getTileImageByRemoteTif({
-                bounds: tileBounds,
-                image: this.geoTifInfo.canvas,
-                quality: this.options.quality,
-                tifImage: !this.geoTifInfo.loadedPreview ?  this.geoTifInfo.imageSmallTif : this.geoTifInfo.imageTif,
-                renderTifToData: this.renderTifToData
-            }, this.geoTifInfo).then((dataUrl) => {
-                loadTile(dataUrl);
-            })
-        }
-
+        const dataUrl = getTileImage({
+            bounds: tileBounds,
+            image: this.geoTifInfo.canvas,
+            quality: this.options.quality
+        });
+        loadTile(dataUrl);
     }
 
     _tifLoaded() {
@@ -270,113 +200,121 @@ export class TifLayer extends TileLayer {
             url: url,
             loaded: false
         };
-        fromUrl(url).then(async (tileHandle) => {
-            this.geoTifInfo.tileHandle = tileHandle;
-            const image = await tileHandle.getImage();
-            const width = image.getWidth();
-            const height = image.getHeight();
-            let bounds = image.getBoundingBox();
-            let mBounds = bounds;
-            const geoInfo = image.getGeoKeys();
-            this.geoTifInfo.imageTif = image;
-            this.geoTifInfo.tileSize = this.getTileSize().width;
-            this.geoTifInfo.geoInfo = geoInfo;
-            const extent = new Extent(bounds);
-            if (!geoInfo) {
-                console.error('not find tif geo info');
-                return;
-            }
-
-            if (is4326(geoInfo.GeographicTypeGeoKey)) {
-                mBounds = forEachCoordinatesOfExtent(extent, 'forward');
-            } else if (geoInfo.ProjectedCSTypeGeoKey === 3857) {
-                bounds = forEachCoordinatesOfExtent(extent, 'inverse');
-                forEachCoordinatesOfExtent(extent, 'inverse', extent);
-            } else {
-                console.error('Current coordinate projection not supported ', geoInfo);
-            }
-            this.geoTifInfo = Object.assign(this.geoTifInfo, {
-                width,
-                height,
-                bounds,
-                extent,
-                mBounds
+        fetch(url).then(res => res.arrayBuffer()).then(arrayBuffer => {
+            fromArrayBuffer(arrayBuffer).then(tiff => {
+                return tiff.getImage();
+            }).then(image => {
+                const width = image.getWidth();
+                const height = image.getHeight();
+                let bounds = image.getBoundingBox();
+                let mBounds = bounds;
+                const geoInfo = image.getGeoKeys();
+                this.geoTifInfo.geoInfo = geoInfo;
+                const extent = new Extent(bounds);
+                if (!geoInfo) {
+                    console.error('not find tif geo info');
+                    return;
+                }
+                if (is4326(geoInfo.GeographicTypeGeoKey)) {
+                    mBounds = forEachCoordinatesOfExtent(extent, 'forward');
+                } else if (geoInfo.ProjectedCSTypeGeoKey === 3857) {
+                    bounds = forEachCoordinatesOfExtent(extent, 'inverse');
+                    forEachCoordinatesOfExtent(extent, 'inverse', extent);
+                } else {
+                    console.error('Current coordinate projection not supported ', geoInfo);
+                }
+                this.geoTifInfo = Object.assign(this.geoTifInfo, {
+                    width, height, bounds, extent, mBounds
+                });
+                this.readTif(image);
             });
-            let imageCount;
-            try {
-                imageCount = await tileHandle.getImageCount();
-            } catch (e) {
-                imageCount = 1;
-            }
-            // 加载最小的 image
-            const smallImage = await tileHandle.getImage(imageCount - 1);
-            this.geoTifInfo.imageSmallTif = smallImage;
-            this.readTif(smallImage);
-            return smallImage;
         }).catch(error => {
             console.log(error);
         });
     }
 
-    async readTif() {
-        const {
-            width,
-            height
-        } = this.geoTifInfo;
+    readTif(image) {
+        const width = image.getWidth();
+        const height = image.getHeight();
+        const rowHeight = 400;
+        const row = Math.ceil(height / rowHeight);
+        const datas = [];
+        let idx = 0;
         const geoTifInfo = this.geoTifInfo;
-        const readEnd = (image) => {
-            geoTifInfo.loaded = true;
-            geoTifInfo.canvas = image;
-            this.fire('tifload', Object.assign({}, this.geoTifInfo));
-            this._tifLoaded();
-        };
-        await geoTifInfo.imageSmallTif.readRasters({
-            pool,
-            width,
-            height
-        }).then(raster => {
-            const datas = this.renderTifToData(raster);
-            const cImage = createImage(width, height, datas, this.options.ignoreBlackColor);
-            readEnd(cImage);
-        });
-        // 渲染完成，清除缓存，进行移动加载大图
-        this.once('renderend', () => {
-            // 直接调用 clear 即可
-            this.geoTifInfo.loadedPreview = true
-            const renderer = this.getRenderer()
-            if (renderer && renderer.tileInfoCache){
-                enderer.tileInfoCache.reset();
+        const read = () => {
+            if (idx < row) {
+                if (this.options.datadebug) {
+                    console.log(`正在读取(by geotiff.readRGB) tif的数据 ${idx + 1}/${row}`);
+                }
+                if (!geoTifInfo.bounds) {
+                    return;
+                }
+                const top = idx * rowHeight, bottom = Math.min(top + rowHeight, height);
+                image.readRGB({
+                    interleave: true,
+                    window: [0, top, width, bottom],
+                    pool,
+                    enableAlpha: true
+                }).then(data => {
+                    datas.push(data);
+                    idx++;
+                    read();
+                });
+            } else {
+                if (!geoTifInfo.bounds) {
+                    return;
+                }
+                geoTifInfo.data = mergeArrayBuffer(datas);
+
+                const readEnd = (image) => {
+
+                    geoTifInfo.loaded = true;
+                    geoTifInfo.canvas = image;
+                    this.fire('tifload', Object.assign({}, this.geoTifInfo));
+                    this._tifLoaded();
+                };
+
+                if (!Browser.decodeImageInWorker) {
+                    const image = createImage(width, height, geoTifInfo.data, this.options.ignoreBlackColor);
+                    readEnd(image);
+                } else {
+                    const actor = getActor();
+                    const arrayBuffer = this.geoTifInfo.data.buffer;
+                    actor.send({ width, height, type: 'createimage', url: this.geoTifInfo.url, buffer: arrayBuffer, ignoreBlackColor: this.options.ignoreBlackColor },
+                        [arrayBuffer], (err, message) => {
+                            if (err) {
+                                console.error(err);
+                                return;
+                            }
+                            readEnd(message.buffer);
+                        });
+                }
             }
-        })
+        };
+        read();
     }
 
     getImageBounds(x, y, z, bounds) {
         const extent = this._getTileExtent(x, y, z);
         const tileminx = extent.xmin, tileminy = extent.ymin, tilemaxx = extent.xmax, tilemaxy = extent.ymax;
-        const {
-            width,
-            height
-        } = this.geoTifInfo;
+        const { width, height } = this.geoTifInfo;
         const [minx, miny, maxx, maxy] = bounds;
         const ax = width / (maxx - minx), ay = height / (maxy - miny);
         const px = (tileminx - minx) * ax, py = height - (tilemaxy - miny) * ay;
-        let w = (tilemaxx - tileminx) * ax, h = (tilemaxy - tileminy) * ay;
-        if (w === 0) {
-            w = 0.1;
-        }
-        if (h === 0) {
-            h = 0.1;
-        }
-        return [px, py, w, h];
+        const w = (tilemaxx - tileminx) * ax, h = (tilemaxy - tileminy) * ay;
+        return [px, py, w, h].map(v => {
+            return Math.round(v);
+        });
 
     }
 
     _getTileExtent(x, y, z) {
-        const map = this.getMap(), res = map._getResolution(z), tileConfig = this._getTileConfig(),
+        const map = this.getMap(),
+            res = map._getResolution(z),
+            tileConfig = this._getTileConfig(),
             tileExtent = tileConfig.getTilePrjExtent(x, y, res);
         return tileExtent;
     }
-
 
     setTifUrl(url) {
         this.options.tifUrl = url;
@@ -388,5 +326,4 @@ export class TifLayer extends TileLayer {
         return this;
     }
 }
-
 TifLayer.mergeOptions(options);
