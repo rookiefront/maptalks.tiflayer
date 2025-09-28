@@ -425,6 +425,10 @@ export class TifLayer extends TileLayer {
         this.getRenderer().setToRedraw();
         return this;
     }
+    remove(){
+        super.remove();
+        this.signal?.abort?.()
+    }
 }
 
 TifLayer.mergeOptions(options);
