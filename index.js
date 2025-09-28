@@ -139,6 +139,7 @@ const options = {
 };
 
 export class TifLayer extends TileLayer {
+    signal = new AbortController()
     constructor(id, options) {
         super(id, options);
         this._pendingTiles = [];
@@ -369,7 +370,8 @@ export class TifLayer extends TileLayer {
             this.geoTifInfo.imageTif.readRasters({
                 pool,
                 width,
-                height
+                height,
+                signal: this.signal?.signal
             }).then((raster) => {
                 const datas = this.renderTifToData(raster);
                 workerCreateImage(width, height, datas, this.options.ignoreBlackColor, (cImage) => {
@@ -413,6 +415,8 @@ export class TifLayer extends TileLayer {
 
 
     setTifUrl(url) {
+        this.signal?.abort?.()
+        this.signal = new AbortController()
         this.options.tifUrl = url;
         this.geoTifInfo = {};
         this._pendingTiles = [];
