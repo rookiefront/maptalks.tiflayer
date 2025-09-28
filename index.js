@@ -25,6 +25,26 @@ function getActor() {
     return tifActor;
 }
 
+
+function workerCreateImage(width, height, datas, ignoreBlackColor, readEnd) {
+    if (!Browser.decodeImageInWorker) {
+        const image = createImage(width, height, datas, ignoreBlackColor);
+        readEnd(image)
+    } else {
+        const actor = getActor();
+        const arrayBuffer = this.geoTifInfo.data.buffer;
+        actor.send({ width, height, type: 'createimage', url: this.geoTifInfo.url, buffer: arrayBuffer, ignoreBlackColor: this.options.ignoreBlackColor },
+            [arrayBuffer], (err, message) => {
+                if (err) {
+                    console.error(err);
+                    return;
+                }
+                readEnd(message.buffer);
+            });
+    }
+}
+
+
 function getTileImage(options) {
     if (!tempCanvas) {
         tempCanvas = createCanvas(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE);
@@ -60,23 +80,25 @@ async function getTileImageByRemoteTif(options, geoTifInfo) {
     ctx.imageSmoothingQuality = 'high';
     const { bounds, quality } = options;
     const [px, py, w, h] = bounds;
-    const raster = await options.tifImage.readRasters({
+    const params = {
         window: [px, py, px+w, py+h],
         width: geoTifInfo.tileSize,
         height: geoTifInfo.tileSize,
         pool,
-    });
+    }
+    console.log(params)
+    const raster = await options.tifImage.readRasters(params);
 
     const data = options.renderTifToData(raster);
 
-    // const imageData = new ImageData(new Uint8ClampedArray(data), geoTifInfo.tileSize, geoTifInfo.tileSize);
-    // ctx.putImageData(imageData, 0, 0);
-    //
-    // if (!Browser.decodeImageInWorker) {
-    //     return tempCanvas.toDataURL('image/png', quality || 0.6);
-    // } else {
-    //     return tempCanvas.transferToImageBitmap();
-    // }
+    const imageData = new ImageData(new Uint8ClampedArray(data), geoTifInfo.tileSize, geoTifInfo.tileSize);
+    ctx.putImageData(imageData, 0, 0);
+
+    if (!Browser.decodeImageInWorker) {
+        return tempCanvas.toDataURL('image/png', quality || 0.6);
+    } else {
+        return tempCanvas.transferToImageBitmap();
+    }
 }
 
 
@@ -233,24 +255,24 @@ export class TifLayer extends TileLayer {
             return null;
         }
         const tileBounds = this.getImageBounds(x, y, z, bounds);
-        if (!this.geoTifInfo.loadedPreview){
+        // if (!this.geoTifInfo.loadedPreview){
             const dataUrl = getTileImage({
                 bounds: tileBounds,
                 image: this.geoTifInfo.canvas,
                 quality: this.options.quality,
             });
             loadTile(dataUrl);
-        }else {
-            getTileImageByRemoteTif({
-                bounds: tileBounds,
-                image: this.geoTifInfo.canvas,
-                quality: this.options.quality,
-                tifImage: !this.geoTifInfo.loadedPreview ?  this.geoTifInfo.imageSmallTif : this.geoTifInfo.imageTif,
-                renderTifToData: this.renderTifToData
-            }, this.geoTifInfo).then((dataUrl) => {
-                loadTile(dataUrl);
-            })
-        }
+        // }else {
+        //     getTileImageByRemoteTif({
+        //         bounds: tileBounds,
+        //         image: this.geoTifInfo.canvas,
+        //         quality: this.options.quality,
+        //         tifImage: !this.geoTifInfo.loadedPreview ?  this.geoTifInfo.imageSmallTif : this.geoTifInfo.imageTif,
+        //         renderTifToData: this.renderTifToData
+        //     }, this.geoTifInfo).then((dataUrl) => {
+        //         loadTile(dataUrl);
+        //     })
+        // }
 
     }
 
@@ -336,17 +358,29 @@ export class TifLayer extends TileLayer {
             height
         }).then(raster => {
             const datas = this.renderTifToData(raster);
-            const cImage = createImage(width, height, datas, this.options.ignoreBlackColor);
-            readEnd(cImage);
+             workerCreateImage(width, height, datas, this.options.ignoreBlackColor, (cImage) => {
+                 readEnd(cImage);
+             });
         });
         // 渲染完成，清除缓存，进行移动加载大图
         this.once('renderend', () => {
             // 直接调用 clear 即可
             this.geoTifInfo.loadedPreview = true
-            const renderer = this.getRenderer()
-            if (renderer && renderer.tileInfoCache){
-                enderer.tileInfoCache.reset();
-            }
+            this.geoTifInfo.imageTif.readRasters({
+                pool,
+                width,
+                height
+            }).then((raster) => {
+                const datas = this.renderTifToData(raster);
+                workerCreateImage(width, height, datas, this.options.ignoreBlackColor, (cImage) => {
+                    geoTifInfo.canvas = cImage;
+                    const renderer = this.getRenderer()
+                    if (renderer && renderer.tileInfoCache){
+                        renderer.tileInfoCache.reset();
+                    }
+                });
+            })
+
         })
     }
 
